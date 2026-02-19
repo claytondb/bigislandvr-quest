@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="description" content="Explore Hawaii's Big Island in immersive VR">
+  <meta name="theme-color" content="#0D3B66">
+  
+  <!-- WebXR polyfill for older browsers -->
+  <script src="https://cdn.jsdelivr.net/npm/webxr-polyfill@latest/build/webxr-polyfill.min.js"></script>
+  
+  <title>Big Island VR Quest</title>
+  
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0D3B66;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: white;
+    }
+    
+    #app {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    
+    #canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    
+    /* Loading screen */
+    #loading {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, #0D3B66 0%, #1A6B7C 50%, #0D3B66 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.5s ease;
+    }
+    
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    
+    #loading h1 {
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, #FAF8F5, #7FCDCD);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    #loading p {
+      color: #7FCDCD;
+      font-size: 1.1rem;
+      margin-bottom: 2rem;
+    }
+    
+    .loading-spinner {
+      width: 50px;
+      height: 50px;
+      border: 4px solid rgba(127, 205, 205, 0.2);
+      border-top-color: #7FCDCD;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    /* VR Button */
+    #vr-button {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(135deg, #2A9D8F, #1A6B7C);
+      border: none;
+      border-radius: 12px;
+      color: white;
+      padding: 16px 32px;
+      font-size: 1.2rem;
+      font-weight: 600;
+      cursor: pointer;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      transition: all 0.2s ease;
+    }
+    
+    #vr-button:hover {
+      transform: translateX(-50%) scale(1.05);
+      box-shadow: 0 6px 30px rgba(42, 157, 143, 0.4);
+    }
+    
+    #vr-button:disabled {
+      background: #4A4A4A;
+      cursor: not-allowed;
+    }
+    
+    #vr-button svg {
+      width: 24px;
+      height: 24px;
+    }
+    
+    /* Desktop fallback controls hint */
+    #desktop-hint {
+      position: absolute;
+      bottom: 100px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(26, 26, 26, 0.8);
+      backdrop-filter: blur(10px);
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      color: rgba(255, 255, 255, 0.7);
+      z-index: 40;
+    }
+    
+    /* Info panel for desktop */
+    #info {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(26, 26, 26, 0.85);
+      backdrop-filter: blur(20px);
+      padding: 20px;
+      border-radius: 12px;
+      max-width: 300px;
+      z-index: 50;
+    }
+    
+    #info h2 {
+      font-size: 1.2rem;
+      margin-bottom: 8px;
+      color: #7FCDCD;
+    }
+    
+    #info p {
+      font-size: 0.9rem;
+      color: rgba(255, 255, 255, 0.7);
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas"></canvas>
+    
+    <div id="loading">
+      <h1>🌴 Big Island VR</h1>
+      <p>Preparing your Hawaiian adventure...</p>
+      <div class="loading-spinner"></div>
+    </div>
+    
+    <div id="info">
+      <h2 id="location-name">Loading...</h2>
+      <p id="location-desc">Explore Hawaii's Big Island in immersive VR</p>
+    </div>
+    
+    <div id="desktop-hint">
+      Drag to look around · Scroll to zoom · Click locations to teleport
+    </div>
+    
+    <button id="vr-button" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M20.74 6H3.21C2.55 6 2 6.57 2 7.28v10.44c0 .7.55 1.28 1.23 1.28h4.79c.52 0 .96-.33 1.14-.79l1.19-3.01c.29-.73 1.03-1.2 1.81-1.2h1.68c.78 0 1.52.47 1.81 1.2l1.19 3.01c.18.46.62.79 1.14.79h4.79c.68 0 1.23-.57 1.23-1.28V7.28c0-.71-.55-1.28-1.26-1.28zM7.5 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm9 0c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
+      </svg>
+      Enter VR
+    </button>
+  </div>
+  
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
