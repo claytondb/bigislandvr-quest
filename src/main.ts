@@ -5,10 +5,27 @@
  */
 
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
+
 import type { AppState, Location, UserSettings } from './types';
-import { LOCATIONS } from './data/locations';
+import { LOCATIONS, REGIONS, TOURS } from './data/locations';
+import { PanoramaLoader, ProgressivePanoramaLoader } from './panorama/PanoramaLoader';
+import { ZoomController, VRZoomController } from './core/ZoomController';
+import { QuestControllerManager } from './controllers/QuestControllerManager';
+import { VRUIPanel, VRUIManager } from './ui/VRUIPanel';
+import { SpatialAudioManager, UISoundManager } from './audio/SpatialAudio';
+import { AtmosphereManager, ComfortVignette } from './effects/AtmosphereManager';
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+const CONFIG = {
+  API_KEY: 'AIzaSyBmSDHrsQunVjxhZ4UHQ0asdUY6vZVFszY',
+  SNAP_TURN_ANGLE: 45,
+  DEFAULT_LOCATION_INDEX: 0,
+};
 
 // ============================================================================
 // Application Class
@@ -16,63 +33,90 @@ import { LOCATIONS } from './data/locations';
 
 class BigIslandVRApp {
   // Three.js core
-  private renderer: THREE.WebGLRenderer;
-  private scene: THREE.Scene;
-  private camera: THREE.PerspectiveCamera;
+  private renderer!: THREE.WebGLRenderer;
+  private scene!: THREE.Scene;
+  private camera!: THREE.PerspectiveCamera;
+  private clock: THREE.Clock;
   
   // VR
   private vrButton: HTMLElement | null = null;
-  private controllers: THREE.Group[] = [];
-  private controllerGrips: THREE.Group[] = [];
-  private controllerModelFactory: XRControllerModelFactory;
+  private controllerModelFactory!: XRControllerModelFactory;
+  private questControllers: QuestControllerManager | null = null;
   
   // Panorama
   private panoramaSphere: THREE.Mesh | null = null;
-  private currentPanoTexture: THREE.Texture | null = null;
+  private panoramaLoader!: ProgressivePanoramaLoader;
+  
+  // Systems
+  private zoomController!: ZoomController;
+  private uiManager!: VRUIManager;
+  private audioManager!: SpatialAudioManager;
+  private uiSounds!: UISoundManager;
+  private atmosphereManager!: AtmosphereManager;
+  private vignette!: ComfortVignette;
   
   // State
   private state: AppState;
+  private currentLocationIndex: number = 0;
   
   // DOM elements
-  private canvas: HTMLCanvasElement;
-  private loadingEl: HTMLElement;
-  private infoEl: HTMLElement;
-  private locationNameEl: HTMLElement;
-  private locationDescEl: HTMLElement;
+  private canvas!: HTMLCanvasElement;
+  private loadingEl!: HTMLElement;
+  private locationNameEl!: HTMLElement;
+  private locationDescEl!: HTMLElement;
   
   // Desktop controls
   private isDragging = false;
   private previousMousePosition = { x: 0, y: 0 };
   private spherical = new THREE.Spherical(1, Math.PI / 2, 0);
+  private userRotation = 0; // For snap turn
   
   constructor() {
+    this.clock = new THREE.Clock();
+    this.state = this.createInitialState();
+    
+    this.init();
+  }
+  
+  private async init(): Promise<void> {
+    console.log('🌴 Big Island VR Quest initializing...');
+    
     // Get DOM elements
     this.canvas = document.getElementById('canvas') as HTMLCanvasElement;
     this.loadingEl = document.getElementById('loading')!;
-    this.infoEl = document.getElementById('info')!;
     this.locationNameEl = document.getElementById('location-name')!;
     this.locationDescEl = document.getElementById('location-desc')!;
     
-    // Initialize state
-    this.state = this.createInitialState();
-    
     // Initialize Three.js
-    this.renderer = this.createRenderer();
-    this.scene = this.createScene();
-    this.camera = this.createCamera();
+    this.initRenderer();
+    this.initScene();
+    this.initCamera();
     
     // Initialize VR
     this.controllerModelFactory = new XRControllerModelFactory();
-    this.initVR();
+    await this.initVR();
     
-    // Create panorama sphere
-    this.createPanoramaSphere();
+    // Initialize systems
+    this.initPanorama();
+    this.initZoom();
+    this.initUI();
+    this.initAudio();
+    this.initAtmosphere();
     
     // Set up desktop controls
     this.setupDesktopControls();
     
-    // Start
-    this.init();
+    // Load first location
+    await this.goToLocation(CONFIG.DEFAULT_LOCATION_INDEX);
+    
+    // Hide loading screen
+    this.loadingEl.classList.add('hidden');
+    this.state.mode = 'desktop';
+    
+    // Start render loop
+    this.renderer.setAnimationLoop((time, frame) => this.render(time, frame));
+    
+    console.log('✅ Big Island VR Quest ready!');
   }
   
   private createInitialState(): AppState {
@@ -129,44 +173,42 @@ class BigIslandVRApp {
     return defaults;
   }
   
-  private createRenderer(): THREE.WebGLRenderer {
-    const renderer = new THREE.WebGLRenderer({
+  private initRenderer(): void {
+    this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
       antialias: true,
       alpha: false,
     });
     
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.xr.enabled = true;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.xr.enabled = true;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     
-    return renderer;
+    window.addEventListener('resize', () => this.onResize());
   }
   
-  private createScene(): THREE.Scene {
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0D3B66);
-    return scene;
+  private initScene(): void {
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x0D3B66);
   }
   
-  private createCamera(): THREE.PerspectiveCamera {
-    const camera = new THREE.PerspectiveCamera(
+  private initCamera(): void {
+    this.camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
     );
-    camera.position.set(0, 0, 0);
-    return camera;
+    this.camera.position.set(0, 1.6, 0); // Average eye height
   }
   
-  private createPanoramaSphere(): void {
-    // Create a large inverted sphere for the panorama
+  private initPanorama(): void {
+    // Create panorama sphere
     const geometry = new THREE.SphereGeometry(500, 64, 32);
-    geometry.scale(-1, 1, 1); // Invert so texture shows on inside
+    geometry.scale(-1, 1, 1); // Invert for interior viewing
     
     const material = new THREE.MeshBasicMaterial({
       color: 0x333333,
@@ -175,97 +217,192 @@ class BigIslandVRApp {
     
     this.panoramaSphere = new THREE.Mesh(geometry, material);
     this.scene.add(this.panoramaSphere);
+    
+    // Initialize panorama loader
+    this.panoramaLoader = new ProgressivePanoramaLoader(CONFIG.API_KEY);
+  }
+  
+  private initZoom(): void {
+    this.zoomController = new VRZoomController(this.camera, this.scene);
+    
+    this.zoomController.setOnZoomChange((level, fov) => {
+      console.log(`Zoom: ${level.toFixed(1)}x (FOV: ${fov.toFixed(0)}°)`);
+    });
+    
+    this.zoomController.setOnHighQualityRequest(() => {
+      // Request higher quality panorama when zoomed
+      if (this.state.currentLocation) {
+        console.log('Requesting high quality panorama...');
+        // TODO: Implement high-quality tile loading
+      }
+    });
+  }
+  
+  private initUI(): void {
+    this.uiManager = new VRUIManager(this.scene);
+    
+    // Create Tour Guide panel
+    const tourGuide = this.uiManager.createPanel({
+      id: 'tour-guide',
+      width: 0.8,
+      height: 0.6,
+      curved: true,
+      curveRadius: 2.5,
+      position: new THREE.Vector3(-1.2, 1.5, -1.5),
+      followUser: false,
+      backgroundColor: 0x1A1A1A,
+      backgroundOpacity: 0.9,
+    });
+    
+    // Add title
+    tourGuide.addElement({
+      type: 'text',
+      id: 'title',
+      position: { x: 0.05, y: 0.05 },
+      width: 0.7,
+      height: 0.08,
+      content: '🗺️ Tour Guide',
+      fontSize: 32,
+      color: 0x7FCDCD,
+    });
+    
+    // Add location name
+    tourGuide.addElement({
+      type: 'text',
+      id: 'location-name',
+      position: { x: 0.05, y: 0.15 },
+      width: 0.7,
+      height: 0.06,
+      content: 'Loading...',
+      fontSize: 28,
+      color: 0xFAF8F5,
+    });
+    
+    // Add prev/next buttons
+    tourGuide.addElement({
+      type: 'button',
+      id: 'prev-btn',
+      position: { x: 0.05, y: 0.45 },
+      width: 0.35,
+      height: 0.1,
+      content: '◀ Previous',
+      onClick: () => this.prevLocation(),
+    });
+    
+    tourGuide.addElement({
+      type: 'button',
+      id: 'next-btn',
+      position: { x: 0.42, y: 0.45 },
+      width: 0.35,
+      height: 0.1,
+      content: 'Next ▶',
+      onClick: () => this.nextLocation(),
+    });
+    
+    tourGuide.hide(); // Hidden by default
+  }
+  
+  private initAudio(): void {
+    this.audioManager = new SpatialAudioManager();
+    this.uiSounds = new UISoundManager();
+    
+    // Audio will be initialized on first user interaction
+    const initAudioOnInteraction = async () => {
+      await this.audioManager.init();
+      document.removeEventListener('click', initAudioOnInteraction);
+      document.removeEventListener('touchstart', initAudioOnInteraction);
+    };
+    
+    document.addEventListener('click', initAudioOnInteraction, { once: true });
+    document.addEventListener('touchstart', initAudioOnInteraction, { once: true });
+  }
+  
+  private initAtmosphere(): void {
+    this.atmosphereManager = new AtmosphereManager(this.scene, this.camera);
+    this.vignette = new ComfortVignette(this.camera);
+    
+    // Apply settings
+    this.vignette.setEnabled(this.state.settings.vignette);
+    this.vignette.setIntensity(this.state.settings.vignetteIntensity);
+    this.atmosphereManager.setEnabled(this.state.settings.atmosphericEffects);
   }
   
   private async initVR(): Promise<void> {
-    // Check for WebXR support
-    if ('xr' in navigator) {
-      const isSupported = await (navigator as any).xr.isSessionSupported('immersive-vr');
-      
-      if (isSupported) {
-        // Create VR button
-        this.vrButton = VRButton.createButton(this.renderer);
-        document.body.appendChild(this.vrButton);
-        
-        // Enable the custom button
-        const customVRButton = document.getElementById('vr-button');
-        if (customVRButton) {
-          customVRButton.removeAttribute('disabled');
-          customVRButton.addEventListener('click', () => this.enterVR());
-        }
-        
-        // Set up controllers
-        this.setupControllers();
-        
-        // VR session events
-        this.renderer.xr.addEventListener('sessionstart', () => this.onVRSessionStart());
-        this.renderer.xr.addEventListener('sessionend', () => this.onVRSessionEnd());
-      } else {
-        console.log('WebXR immersive-vr not supported');
-        this.updateVRButtonState(false, 'VR Not Available');
-      }
-    } else {
+    if (!('xr' in navigator)) {
       console.log('WebXR not available');
       this.updateVRButtonState(false, 'VR Not Supported');
+      return;
     }
+    
+    const isSupported = await (navigator as any).xr.isSessionSupported('immersive-vr');
+    
+    if (isSupported) {
+      // Create VR button
+      this.vrButton = VRButton.createButton(this.renderer);
+      document.body.appendChild(this.vrButton);
+      
+      // Enable custom button
+      const customVRButton = document.getElementById('vr-button');
+      if (customVRButton) {
+        customVRButton.removeAttribute('disabled');
+        customVRButton.addEventListener('click', () => this.enterVR());
+      }
+      
+      // Set up controllers
+      this.setupVRControllers();
+      
+      // VR session events
+      this.renderer.xr.addEventListener('sessionstart', () => this.onVRSessionStart());
+      this.renderer.xr.addEventListener('sessionend', () => this.onVRSessionEnd());
+    } else {
+      console.log('WebXR immersive-vr not supported');
+      this.updateVRButtonState(false, 'VR Not Available');
+    }
+  }
+  
+  private setupVRControllers(): void {
+    this.questControllers = new QuestControllerManager(this.renderer);
+    this.questControllers.setupControllers(this.scene);
+    
+    this.questControllers.setEvents({
+      onZoomChange: (value) => {
+        if (this.zoomController instanceof VRZoomController) {
+          this.zoomController.updateFromController(value, 0);
+        }
+      },
+      onTurnLeft: () => {
+        this.userRotation -= THREE.MathUtils.degToRad(this.state.settings.snapTurnAngle);
+        this.vignette.show();
+        setTimeout(() => this.vignette.hide(), 200);
+      },
+      onTurnRight: () => {
+        this.userRotation += THREE.MathUtils.degToRad(this.state.settings.snapTurnAngle);
+        this.vignette.show();
+        setTimeout(() => this.vignette.hide(), 200);
+      },
+      onTourGuideToggle: () => {
+        const panel = this.uiManager.getPanel('tour-guide');
+        if (panel) panel.toggle();
+      },
+      onSelect: () => {
+        this.uiManager.click();
+      },
+      onBack: () => {
+        const panel = this.uiManager.getPanel('tour-guide');
+        if (panel?.mesh.visible) panel.hide();
+      },
+    });
   }
   
   private updateVRButtonState(enabled: boolean, text: string): void {
     const button = document.getElementById('vr-button');
     if (button) {
-      button.textContent = text;
+      const textSpan = button.querySelector('span:last-child') || button;
+      textSpan.textContent = text;
       if (!enabled) {
         button.setAttribute('disabled', 'true');
       }
     }
-  }
-  
-  private setupControllers(): void {
-    // Controller 0 (typically right)
-    const controller0 = this.renderer.xr.getController(0);
-    controller0.addEventListener('selectstart', () => this.onSelectStart(0));
-    controller0.addEventListener('selectend', () => this.onSelectEnd(0));
-    controller0.addEventListener('squeezestart', () => this.onSqueezeStart(0));
-    controller0.addEventListener('squeezeend', () => this.onSqueezeEnd(0));
-    this.scene.add(controller0);
-    this.controllers.push(controller0);
-    
-    // Controller 1 (typically left)
-    const controller1 = this.renderer.xr.getController(1);
-    controller1.addEventListener('selectstart', () => this.onSelectStart(1));
-    controller1.addEventListener('selectend', () => this.onSelectEnd(1));
-    controller1.addEventListener('squeezestart', () => this.onSqueezeStart(1));
-    controller1.addEventListener('squeezeend', () => this.onSqueezeEnd(1));
-    this.scene.add(controller1);
-    this.controllers.push(controller1);
-    
-    // Controller grips (for visual models)
-    const grip0 = this.renderer.xr.getControllerGrip(0);
-    grip0.add(this.controllerModelFactory.createControllerModel(grip0));
-    this.scene.add(grip0);
-    this.controllerGrips.push(grip0);
-    
-    const grip1 = this.renderer.xr.getControllerGrip(1);
-    grip1.add(this.controllerModelFactory.createControllerModel(grip1));
-    this.scene.add(grip1);
-    this.controllerGrips.push(grip1);
-    
-    // Add pointer rays to controllers
-    const rayGeometry = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, 0, -5),
-    ]);
-    const rayMaterial = new THREE.LineBasicMaterial({
-      color: 0x7FCDCD,
-      transparent: true,
-      opacity: 0.6,
-    });
-    
-    const ray0 = new THREE.Line(rayGeometry, rayMaterial);
-    controller0.add(ray0);
-    
-    const ray1 = new THREE.Line(rayGeometry.clone(), rayMaterial.clone());
-    controller1.add(ray1);
   }
   
   private async enterVR(): Promise<void> {
@@ -284,12 +421,16 @@ class BigIslandVRApp {
   private onVRSessionStart(): void {
     this.state.mode = 'vr';
     this.state.vr.active = true;
-    console.log('VR session started');
+    console.log('🥽 VR session started');
     
     // Hide desktop UI
-    this.infoEl.style.display = 'none';
+    document.getElementById('info')!.style.display = 'none';
     document.getElementById('desktop-hint')!.style.display = 'none';
     document.getElementById('vr-button')!.style.display = 'none';
+    
+    // Show VR UI
+    const tourGuide = this.uiManager.getPanel('tour-guide');
+    if (tourGuide) tourGuide.show();
   }
   
   private onVRSessionEnd(): void {
@@ -298,28 +439,13 @@ class BigIslandVRApp {
     console.log('VR session ended');
     
     // Show desktop UI
-    this.infoEl.style.display = 'block';
+    document.getElementById('info')!.style.display = 'block';
     document.getElementById('desktop-hint')!.style.display = 'block';
-    document.getElementById('vr-button')!.style.display = 'block';
-  }
-  
-  // Controller event handlers
-  private onSelectStart(index: number): void {
-    console.log(`Controller ${index} select start (trigger)`);
-    // TODO: Implement zoom activation or UI selection
-  }
-  
-  private onSelectEnd(index: number): void {
-    console.log(`Controller ${index} select end`);
-  }
-  
-  private onSqueezeStart(index: number): void {
-    console.log(`Controller ${index} squeeze start (grip)`);
-    // TODO: Implement menu toggle
-  }
-  
-  private onSqueezeEnd(index: number): void {
-    console.log(`Controller ${index} squeeze end`);
+    document.getElementById('vr-button')!.style.display = 'flex';
+    
+    // Hide VR UI
+    const tourGuide = this.uiManager.getPanel('tour-guide');
+    if (tourGuide) tourGuide.hide();
   }
   
   private setupDesktopControls(): void {
@@ -356,8 +482,24 @@ class BigIslandVRApp {
       this.camera.updateProjectionMatrix();
     });
     
-    // Window resize
-    window.addEventListener('resize', () => this.onResize());
+    // Keyboard shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (this.state.vr.active) return;
+      
+      switch (e.key) {
+        case 'ArrowLeft':
+          this.prevLocation();
+          break;
+        case 'ArrowRight':
+          this.nextLocation();
+          break;
+        case 'g':
+        case 'G':
+          const panel = this.uiManager.getPanel('tour-guide');
+          if (panel) panel.toggle();
+          break;
+      }
+    });
   }
   
   private updateCameraFromSpherical(): void {
@@ -377,103 +519,116 @@ class BigIslandVRApp {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   }
   
-  private async init(): Promise<void> {
-    console.log('Big Island VR Quest initializing...');
-    
-    // Load first location
-    await this.loadLocation(0);
-    
-    // Hide loading screen
-    this.loadingEl.classList.add('hidden');
-    this.state.mode = 'desktop';
-    
-    // Start render loop
-    this.renderer.setAnimationLoop((time, frame) => this.render(time, frame));
-    
-    console.log('Big Island VR Quest ready!');
-  }
+  // ============================================================================
+  // Location Navigation
+  // ============================================================================
   
-  private async loadLocation(index: number): Promise<void> {
+  private async goToLocation(index: number): Promise<void> {
     if (index < 0 || index >= LOCATIONS.length) return;
     
     const location = LOCATIONS[index];
+    this.currentLocationIndex = index;
     this.state.currentLocation = location;
     this.state.currentLocationIndex = index;
     
-    // Update UI
+    console.log(`📍 Loading: ${location.name}`);
+    
+    // Update desktop UI
     this.locationNameEl.textContent = location.name;
     this.locationDescEl.textContent = location.summary || location.desc;
     
-    // Set initial camera direction based on location heading
+    // Update VR UI
+    const tourGuide = this.uiManager.getPanel('tour-guide');
+    if (tourGuide) {
+      tourGuide.removeElement('location-name');
+      tourGuide.addElement({
+        type: 'text',
+        id: 'location-name',
+        position: { x: 0.05, y: 0.15 },
+        width: 0.7,
+        height: 0.06,
+        content: location.name,
+        fontSize: 28,
+        color: 0xFAF8F5,
+      });
+    }
+    
+    // Set camera direction
     this.spherical.theta = THREE.MathUtils.degToRad(location.heading - 90);
     this.spherical.phi = THREE.MathUtils.degToRad(90 - (location.pitch || 0));
     this.updateCameraFromSpherical();
     
-    // TODO: Load actual panorama from Street View
-    // For now, just update the sphere color based on region
-    const regionColors: Record<string, number> = {
-      'Hilo': 0x2A9D8F,
-      'Hamakua': 0x4CAF50,
-      'Puna': 0xE63946,
-      'Volcano': 0xFF6B35,
-      'Kaʻū': 0xF4A261,
-      'Kona': 0x3DA5D9,
-      'Kohala': 0x9B5DE5,
-    };
-    
-    if (this.panoramaSphere) {
-      (this.panoramaSphere.material as THREE.MeshBasicMaterial).color.setHex(
-        regionColors[location.region] || 0x333333
-      );
-    }
-    
-    console.log(`Loaded location: ${location.name} (${location.region})`);
-  }
-  
-  private render(time: number, frame?: XRFrame): void {
-    // Update VR controllers
-    if (frame && this.state.vr.active) {
-      this.updateControllers(frame);
-    }
-    
-    // Render scene
-    this.renderer.render(this.scene, this.camera);
-  }
-  
-  private updateControllers(frame: XRFrame): void {
-    const session = frame.session;
-    
-    for (let i = 0; i < this.controllers.length; i++) {
-      const controller = this.controllers[i];
-      const inputSource = session.inputSources[i];
-      
-      if (inputSource && inputSource.gamepad) {
-        const gamepad = inputSource.gamepad;
-        
-        // Read thumbstick values
-        const thumbstickX = gamepad.axes[2] || 0;
-        const thumbstickY = gamepad.axes[3] || 0;
-        
-        // Right thumbstick for turning (or left if left-handed)
-        if (i === 0) { // Right controller
-          if (this.state.settings.snapTurn) {
-            // Snap turn
-            if (Math.abs(thumbstickX) > 0.8) {
-              // TODO: Implement snap turn
-            }
-          } else {
-            // Smooth turn
-            this.spherical.theta -= thumbstickX * 0.02;
-            this.updateCameraFromSpherical();
+    // Load panorama
+    try {
+      await this.panoramaLoader.loadProgressive(
+        location,
+        (texture, quality) => {
+          if (this.panoramaSphere) {
+            const material = this.panoramaSphere.material as THREE.MeshBasicMaterial;
+            if (material.map) material.map.dispose();
+            material.map = texture;
+            material.color.setHex(0xFFFFFF);
+            material.needsUpdate = true;
+            console.log(`📷 Loaded ${quality} quality panorama`);
           }
         }
-        
-        // Left thumbstick for location navigation
-        if (i === 1) { // Left controller
-          // TODO: Implement location browsing with thumbstick
-        }
+      );
+    } catch (error) {
+      console.warn('Failed to load panorama:', error);
+      // Set region color as fallback
+      const regionColor = REGIONS[location.region]?.color || '#333333';
+      if (this.panoramaSphere) {
+        const material = this.panoramaSphere.material as THREE.MeshBasicMaterial;
+        material.color.set(regionColor);
+        material.map = null;
       }
     }
+    
+    // Update audio
+    this.audioManager.setLocationAudio(location);
+    
+    // Update atmosphere
+    this.atmosphereManager.applyLocation(location);
+    
+    // Show vignette during transition
+    this.vignette.show();
+    setTimeout(() => this.vignette.hide(), 500);
+  }
+  
+  private nextLocation(): void {
+    const newIndex = (this.currentLocationIndex + 1) % LOCATIONS.length;
+    this.goToLocation(newIndex);
+  }
+  
+  private prevLocation(): void {
+    const newIndex = (this.currentLocationIndex - 1 + LOCATIONS.length) % LOCATIONS.length;
+    this.goToLocation(newIndex);
+  }
+  
+  // ============================================================================
+  // Render Loop
+  // ============================================================================
+  
+  private render(time: number, frame?: XRFrame): void {
+    const deltaTime = this.clock.getDelta();
+    
+    // Update VR controllers
+    if (frame && this.state.vr.active && this.questControllers) {
+      this.questControllers.update(frame, deltaTime);
+      
+      // Apply user rotation (snap turn)
+      this.camera.rotation.y = this.userRotation;
+    }
+    
+    // Update systems
+    this.zoomController.update(deltaTime);
+    this.uiManager.update(this.camera, deltaTime);
+    this.audioManager.update(deltaTime);
+    this.atmosphereManager.update(deltaTime);
+    this.vignette.update(deltaTime);
+    
+    // Render
+    this.renderer.render(this.scene, this.camera);
   }
 }
 

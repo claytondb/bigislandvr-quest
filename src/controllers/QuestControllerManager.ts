@@ -93,8 +93,8 @@ export class QuestControllerManager {
   private teleportIndicator: THREE.Mesh | null = null;
   
   // Haptics
-  private leftHaptic: GamepadHapticActuator | null = null;
-  private rightHaptic: GamepadHapticActuator | null = null;
+  private leftHaptic: HapticActuator | null = null;
+  private rightHaptic: HapticActuator | null = null;
   
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
@@ -149,16 +149,7 @@ export class QuestControllerManager {
     this.rightController.add(this.rightRay);
     scene.add(this.rightController);
     
-    // Set up event listeners
-    this.leftController.addEventListener('selectstart', () => this.onSelectStart('left'));
-    this.leftController.addEventListener('selectend', () => this.onSelectEnd('left'));
-    this.leftController.addEventListener('squeezestart', () => this.onSqueezeStart('left'));
-    this.leftController.addEventListener('squeezeend', () => this.onSqueezeEnd('left'));
-    
-    this.rightController.addEventListener('selectstart', () => this.onSelectStart('right'));
-    this.rightController.addEventListener('selectend', () => this.onSelectEnd('right'));
-    this.rightController.addEventListener('squeezestart', () => this.onSqueezeStart('right'));
-    this.rightController.addEventListener('squeezeend', () => this.onSqueezeEnd('right'));
+    // Set up event listeners (handled in update loop via gamepad API instead)
     
     // Create teleport indicator
     this.createTeleportIndicator(scene);
@@ -224,7 +215,7 @@ export class QuestControllerManager {
         
         // Store haptic actuator
         if (gamepad.hapticActuators?.[0]) {
-          this.leftHaptic = gamepad.hapticActuators[0] as GamepadHapticActuator;
+          this.leftHaptic = gamepad.hapticActuators[0] as HapticActuator;
         }
       } else {
         // Right controller input
@@ -239,7 +230,7 @@ export class QuestControllerManager {
         
         // Store haptic actuator
         if (gamepad.hapticActuators?.[0]) {
-          this.rightHaptic = gamepad.hapticActuators[0] as GamepadHapticActuator;
+          this.rightHaptic = gamepad.hapticActuators[0] as HapticActuator;
         }
       }
     }
@@ -436,7 +427,5 @@ export class QuestControllerManager {
   }
 }
 
-// Event types for TypeScript
-interface GamepadHapticActuator {
-  pulse(intensity: number, duration: number): Promise<void>;
-}
+// Haptic actuator type (use any to avoid browser API conflicts)
+type HapticActuator = any;
