@@ -173,7 +173,8 @@ class BigIslandVRApp {
   }
   
   private async getPanoramaId(lat: number, lng: number): Promise<string | null> {
-    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&key=${API_KEY}`;
+    // Add radius=500 to search within 500 meters
+    const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&radius=500&key=${API_KEY}`;
     
     try {
       const response = await fetch(url);
