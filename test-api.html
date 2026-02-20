@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><title>Street View API Test</title></head>
+<body>
+<h1>Street View API Test</h1>
+<div id="results"></div>
+<script>
+const API_KEY = 'AIzaSyBmSDHrsQunVjxhZ4UHQ0asdUY6vZVFszY';
+const panoId = 'OAfH-2e09cjrBeKvhG60ow';
+
+const log = (msg) => {
+  document.getElementById('results').innerHTML += msg + '<br>';
+  console.log(msg);
+};
+
+async function test() {
+  log('Testing metadata API...');
+  try {
+    const metaRes = await fetch(`https://maps.googleapis.com/maps/api/streetview/metadata?location=19.7235,-155.0720&radius=1000&source=outdoor&key=${API_KEY}`);
+    const metaData = await metaRes.json();
+    log('Metadata: ' + JSON.stringify(metaData));
+  } catch (e) {
+    log('Metadata ERROR: ' + e.message);
+  }
+
+  log('<br>Testing image load...');
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    log('✅ Image loaded! Size: ' + img.width + 'x' + img.height);
+    document.body.appendChild(img);
+  };
+  img.onerror = (e) => {
+    log('❌ Image load FAILED: ' + JSON.stringify(e));
+    console.error('Full error:', e);
+  };
+  img.src = `https://maps.googleapis.com/maps/api/streetview?size=640x640&pano=${panoId}&heading=0&pitch=0&fov=120&key=${API_KEY}`;
+}
+
+test();
+</script>
+</body>
+</html>

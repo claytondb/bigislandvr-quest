@@ -224,23 +224,27 @@ class BigIslandVRApp {
         img.onload = () => {
           loadedCount++;
           
-          // Map heading to canvas x position (equirectangular projection)
-          // heading 0 = center of image, wraps at 360
-          const centerX = ((heading + 180) % 360) / 360 * level.width;
-          
-          // Scale to fill height, maintain aspect ratio
+          // Each image covers `fov` degrees of the 360° panorama
+          // Canvas width represents 360°, so each image width = canvas * (fov/360)
+          const drawWidth = level.width * (fov / 360);
           const drawHeight = level.height;
-          const drawWidth = (640 / 640) * drawHeight * (fov / 60); // Scale based on FOV
+          
+          // Map heading to canvas x position
+          // In equirectangular: x=0 is heading 180° (behind), x=width/2 is heading 0° (front)
+          // Heading 0° should be at center of canvas
+          const normalizedHeading = ((heading + 180) % 360) / 360;
+          const centerX = normalizedHeading * level.width;
           
           // Draw centered at the heading position
-          ctx.drawImage(img, centerX - drawWidth / 2, 0, drawWidth, drawHeight);
+          const drawX = centerX - drawWidth / 2;
+          ctx.drawImage(img, drawX, 0, drawWidth, drawHeight);
           
           // Wrap around for seamless 360
-          if (centerX - drawWidth / 2 < 0) {
-            ctx.drawImage(img, level.width + centerX - drawWidth / 2, 0, drawWidth, drawHeight);
+          if (drawX < 0) {
+            ctx.drawImage(img, level.width + drawX, 0, drawWidth, drawHeight);
           }
-          if (centerX + drawWidth / 2 > level.width) {
-            ctx.drawImage(img, centerX - drawWidth / 2 - level.width, 0, drawWidth, drawHeight);
+          if (drawX + drawWidth > level.width) {
+            ctx.drawImage(img, drawX - level.width, 0, drawWidth, drawHeight);
           }
           
           console.log(`✓ Loaded heading ${heading}° (${loadedCount}/${headings.length})`);
