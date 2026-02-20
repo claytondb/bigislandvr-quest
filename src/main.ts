@@ -192,44 +192,74 @@ class BigIslandVRApp {
   }
   
   private async loadPanoramaTiles(panoId: string, quality: 'preview' | 'medium'): Promise<THREE.Texture> {
-    const level = ZOOM_LEVELS[quality];
+    // Use Street View Static API - has CORS support
+    // Load 12 images at 30° intervals for better 360° coverage
     
-    // Create canvas to assemble tiles
+    const level = ZOOM_LEVELS[quality];
     const canvas = document.createElement('canvas');
     canvas.width = level.width;
     canvas.height = level.height;
     const ctx = canvas.getContext('2d')!;
     
-    // Fill with placeholder
-    ctx.fillStyle = '#1A6B7C';
+    // Fill with dark background initially
+    ctx.fillStyle = '#1A3A4A';
     ctx.fillRect(0, 0, level.width, level.height);
     
-    // Load tiles
-    const loadPromises: Promise<void>[] = [];
+    // Load 12 images at 30° intervals with 120° FOV for overlap
+    const headings = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+    const fov = 120; // Wide FOV for overlap
     
-    for (let y = 0; y < level.tilesY; y++) {
-      for (let x = 0; x < level.tilesX; x++) {
-        const tileUrl = `https://cbk0.google.com/cbk?output=tile&panoid=${panoId}&zoom=${level.zoom}&x=${x}&y=${y}`;
+    console.log(`🖼️ Loading ${headings.length} Street View images for pano ${panoId}...`);
+    
+    let loadedCount = 0;
+    
+    const loadPromises = headings.map((heading) => {
+      return new Promise<void>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
         
-        const promise = new Promise<void>((resolve) => {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => {
-            ctx.drawImage(img, x * TILE_SIZE, y * TILE_SIZE);
-            resolve();
-          };
-          img.onerror = () => {
-            console.warn(`Tile ${x},${y} failed`);
-            resolve();
-          };
-          img.src = tileUrl;
-        });
+        // Street View Static API URL - max 640x640
+        const url = `https://maps.googleapis.com/maps/api/streetview?size=640x640&pano=${panoId}&heading=${heading}&pitch=0&fov=${fov}&key=${API_KEY}`;
         
-        loadPromises.push(promise);
-      }
-    }
+        img.onload = () => {
+          loadedCount++;
+          
+          // Map heading to canvas x position (equirectangular projection)
+          // heading 0 = center of image, wraps at 360
+          const centerX = ((heading + 180) % 360) / 360 * level.width;
+          
+          // Scale to fill height, maintain aspect ratio
+          const drawHeight = level.height;
+          const drawWidth = (640 / 640) * drawHeight * (fov / 60); // Scale based on FOV
+          
+          // Draw centered at the heading position
+          ctx.drawImage(img, centerX - drawWidth / 2, 0, drawWidth, drawHeight);
+          
+          // Wrap around for seamless 360
+          if (centerX - drawWidth / 2 < 0) {
+            ctx.drawImage(img, level.width + centerX - drawWidth / 2, 0, drawWidth, drawHeight);
+          }
+          if (centerX + drawWidth / 2 > level.width) {
+            ctx.drawImage(img, centerX - drawWidth / 2 - level.width, 0, drawWidth, drawHeight);
+          }
+          
+          console.log(`✓ Loaded heading ${heading}° (${loadedCount}/${headings.length})`);
+          resolve();
+        };
+        
+        img.onerror = (e) => {
+          console.error(`❌ FAILED to load heading ${heading}°:`, e);
+          console.error(`URL was: ${url}`);
+          resolve();
+        };
+        
+        img.src = url;
+      });
+    });
     
     await Promise.all(loadPromises);
+    
+    console.log(`📸 Finished loading ${loadedCount}/${headings.length} images`);
     
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
