@@ -30,12 +30,16 @@ class BigIslandVRApp {
   private pitch = 0;  // Vertical rotation (radians), clamped to avoid flipping
   private isLoading = false;
   
-  // Navigation
+  // Navigation - Google Street View style
   private currentLat = 0;
   private currentLng = 0;
   private currentPanoId: string | null = null;
-  private navArrows: THREE.Mesh[] = [];
   private raycaster = new THREE.Raycaster();
+  private groundPlane!: THREE.Mesh;
+  private navChevron!: THREE.Group;
+  private availableLinks: Array<{ panoId: string; heading: number; lat: number; lng: number }> = [];
+  private hoveredLink: { panoId: string; heading: number; lat: number; lng: number } | null = null;
+  private isTransitioning = false;
   
   constructor() {
     console.log('🌴 Big Island VR Quest starting...');
@@ -195,6 +199,9 @@ class BigIslandVRApp {
         this.currentPanoId = panoId;
         this.currentLat = location.lat;
         this.currentLng = location.lng;
+        
+        // Scan for navigation links
+        this.scanForLinks();
         
         console.log(`✅ Loaded panorama cube for ${location.name}`);
       } else {
@@ -411,74 +418,72 @@ class BigIslandVRApp {
   }
   
   private setupNavigation(): void {
-    // Create 4 navigation arrows (forward, back, left, right)
-    // Larger arrows for easier clicking
-    const arrowGeometry = new THREE.ConeGeometry(1.5, 2, 8);
-    arrowGeometry.rotateX(Math.PI / 2); // Point forward
+    console.log('🎯 Setting up Google-style navigation');
     
-    const arrowMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0x00ff88, 
-      transparent: true, 
-      opacity: 0.8,
-      depthTest: false  // Always render on top
+    // 1. Create invisible ground plane for raycasting
+    const groundGeometry = new THREE.PlaneGeometry(500, 500);
+    const groundMaterial = new THREE.MeshBasicMaterial({ 
+      visible: false,
+      side: THREE.DoubleSide 
     });
+    this.groundPlane = new THREE.Mesh(groundGeometry, groundMaterial);
+    this.groundPlane.rotation.x = -Math.PI / 2; // Make horizontal
+    this.groundPlane.position.y = -1.5; // Below camera eye level
+    this.scene.add(this.groundPlane);
     
-    // Arrow positions: closer and at eye level for easier clicking
-    const directions = [
-      { name: 'forward', pos: new THREE.Vector3(0, 0, -6), rot: 0 },
-      { name: 'back', pos: new THREE.Vector3(0, 0, 6), rot: Math.PI },
-      { name: 'left', pos: new THREE.Vector3(-6, 0, 0), rot: Math.PI / 2 },
-      { name: 'right', pos: new THREE.Vector3(6, 0, 0), rot: -Math.PI / 2 },
-    ];
+    // 2. Create navigation chevron (arrow indicator)
+    this.navChevron = this.createChevron();
+    this.navChevron.visible = false;
+    this.scene.add(this.navChevron);
     
-    console.log('🎯 Setting up navigation arrows');
-    
-    directions.forEach(dir => {
-      const arrow = new THREE.Mesh(arrowGeometry.clone(), arrowMaterial.clone());
-      arrow.position.copy(dir.pos);
-      arrow.rotation.y = dir.rot;
-      arrow.userData = { direction: dir.name };
-      this.scene.add(arrow);
-      this.navArrows.push(arrow);
-    });
-    
-    // Click handler for navigation
+    // 3. Event listeners
     const canvas = this.renderer.domElement;
-    canvas.addEventListener('click', (e) => this.handleNavClick(e));
-    
-    // Hover effect
-    canvas.addEventListener('mousemove', (e) => this.handleNavHover(e));
+    canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+    canvas.addEventListener('click', (e) => this.handleClick(e));
   }
   
-  private handleNavHover(event: MouseEvent): void {
-    const mouse = new THREE.Vector2(
-      (event.clientX / window.innerWidth) * 2 - 1,
-      -(event.clientY / window.innerHeight) * 2 + 1
-    );
+  private createChevron(): THREE.Group {
+    const group = new THREE.Group();
     
-    this.raycaster.setFromCamera(mouse, this.camera);
-    const intersects = this.raycaster.intersectObjects(this.navArrows);
-    
-    // Reset all arrows
-    this.navArrows.forEach(arrow => {
-      (arrow.material as THREE.MeshBasicMaterial).opacity = 0.7;
-      arrow.scale.setScalar(1);
+    // Create chevron shape (two angled bars forming >)
+    const barGeometry = new THREE.BoxGeometry(2, 0.15, 0.5);
+    const barMaterial = new THREE.MeshBasicMaterial({ 
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.9
     });
     
-    // Highlight hovered arrow
-    if (intersects.length > 0) {
-      const arrow = intersects[0].object as THREE.Mesh;
-      (arrow.material as THREE.MeshBasicMaterial).opacity = 1;
-      arrow.scale.setScalar(1.3);
-      this.renderer.domElement.style.cursor = 'pointer';
-    } else {
-      this.renderer.domElement.style.cursor = 'grab';
-    }
+    // Left bar of chevron
+    const leftBar = new THREE.Mesh(barGeometry, barMaterial);
+    leftBar.position.set(-0.6, 0, 0);
+    leftBar.rotation.y = Math.PI / 6; // 30 degrees
+    group.add(leftBar);
+    
+    // Right bar of chevron
+    const rightBar = new THREE.Mesh(barGeometry, barMaterial.clone());
+    rightBar.position.set(0.6, 0, 0);
+    rightBar.rotation.y = -Math.PI / 6; // -30 degrees
+    group.add(rightBar);
+    
+    // Add a subtle glow ring
+    const ringGeometry = new THREE.RingGeometry(1.5, 1.8, 32);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide
+    });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = -0.05;
+    group.add(ring);
+    
+    return group;
   }
   
-  private async handleNavClick(event: MouseEvent): Promise<void> {
-    if (this.isLoading) {
-      console.log('🚫 Click ignored - still loading');
+  private handleMouseMove(event: MouseEvent): void {
+    if (this.isLoading || this.isTransitioning || this.isDragging) {
+      this.navChevron.visible = false;
       return;
     }
     
@@ -488,90 +493,182 @@ class BigIslandVRApp {
     );
     
     this.raycaster.setFromCamera(mouse, this.camera);
-    const intersects = this.raycaster.intersectObjects(this.navArrows);
-    
-    console.log(`🖱️ Click at (${mouse.x.toFixed(2)}, ${mouse.y.toFixed(2)}), intersects: ${intersects.length}`);
+    const intersects = this.raycaster.intersectObject(this.groundPlane);
     
     if (intersects.length > 0) {
-      const direction = intersects[0].object.userData.direction;
-      console.log(`➡️ Arrow clicked: ${direction}`);
-      await this.navigateInDirection(direction);
-    }
-  }
-  
-  private async navigateInDirection(direction: string): Promise<void> {
-    console.log(`🚶 Navigate called: ${direction}, currentLat: ${this.currentLat}, currentLng: ${this.currentLng}`);
-    
-    if (!this.currentLat || !this.currentLng) {
-      console.log('❌ No current position set');
-      return;
-    }
-    
-    // Calculate new position ~15 meters in the given direction
-    // Note: yaw=0 means looking at -Z (north in Three.js convention)
-    const distance = 0.00015; // ~15 meters in lat/lng
-    
-    let bearing = -this.yaw; // Convert from Three.js to compass bearing
-    
-    switch (direction) {
-      case 'forward': break; // Use current yaw
-      case 'back': bearing += Math.PI; break;
-      case 'left': bearing -= Math.PI / 2; break;
-      case 'right': bearing += Math.PI / 2; break;
-    }
-    
-    // Calculate new lat/lng (lat increases going north, lng increases going east)
-    const newLat = this.currentLat + Math.cos(bearing) * distance;
-    const newLng = this.currentLng + Math.sin(bearing) * distance;
-    
-    console.log(`🧭 Bearing: ${(bearing * 180 / Math.PI).toFixed(1)}°, target: (${newLat.toFixed(6)}, ${newLng.toFixed(6)})`);
-    
-    // Try to find a panorama at the new location
-    const panoId = await this.getPanoramaId(newLat, newLng);
-    
-    console.log(`🔍 Found pano: ${panoId} (current: ${this.currentPanoId})`);
-    
-    if (panoId && panoId !== this.currentPanoId) {
-      await this.loadPanoramaAtPosition(panoId, newLat, newLng);
-    } else if (panoId === this.currentPanoId) {
-      console.log('⚠️ Same panorama - try a different direction');
+      const hitPoint = intersects[0].point;
+      
+      // Calculate heading from camera to hit point
+      const dx = hitPoint.x - this.camera.position.x;
+      const dz = hitPoint.z - this.camera.position.z;
+      const headingToPoint = Math.atan2(dx, -dz); // Three.js: -Z is forward
+      
+      // Check if this heading matches any available link
+      const matchedLink = this.findMatchingLink(headingToPoint);
+      
+      if (matchedLink) {
+        // Show chevron at hit point, pointing in link direction
+        this.navChevron.position.copy(hitPoint);
+        this.navChevron.position.y = -1.4; // Slightly above ground
+        this.navChevron.rotation.y = -matchedLink.heading; // Point toward link
+        this.navChevron.visible = true;
+        this.hoveredLink = matchedLink;
+        this.renderer.domElement.style.cursor = 'pointer';
+      } else {
+        this.navChevron.visible = false;
+        this.hoveredLink = null;
+        this.renderer.domElement.style.cursor = 'grab';
+      }
     } else {
-      console.log('❌ No panorama found in that direction');
+      this.navChevron.visible = false;
+      this.hoveredLink = null;
     }
   }
   
-  private async loadPanoramaAtPosition(panoId: string, lat: number, lng: number): Promise<void> {
-    this.isLoading = true;
+  private findMatchingLink(heading: number): { panoId: string; heading: number; lat: number; lng: number } | null {
+    const tolerance = Math.PI / 4; // 45 degrees tolerance
+    
+    for (const link of this.availableLinks) {
+      // Convert link heading to radians
+      const linkHeadingRad = link.heading;
+      
+      // Calculate angular difference
+      let diff = Math.abs(heading - linkHeadingRad);
+      if (diff > Math.PI) diff = 2 * Math.PI - diff;
+      
+      if (diff < tolerance) {
+        return link;
+      }
+    }
+    return null;
+  }
+  
+  private async handleClick(event: MouseEvent): Promise<void> {
+    if (this.isLoading || this.isTransitioning) return;
+    
+    // If we have a hovered link, navigate to it
+    if (this.hoveredLink) {
+      console.log(`🚶 Navigating to ${this.hoveredLink.panoId}`);
+      await this.transitionToPanorama(this.hoveredLink);
+    }
+  }
+  
+  private async transitionToPanorama(link: { panoId: string; heading: number; lat: number; lng: number }): Promise<void> {
+    if (this.isTransitioning) return;
+    this.isTransitioning = true;
+    this.navChevron.visible = false;
     
     const nameEl = document.getElementById('location-name');
-    if (nameEl) nameEl.textContent = '⏳ Loading...';
+    if (nameEl) nameEl.textContent = '⏳ Moving...';
+    
+    // Store original FOV for animation
+    const originalFov = this.camera.fov;
+    const targetFov = originalFov * 0.7; // Zoom in effect
     
     try {
-      console.log(`🔍 Loading pano: ${panoId}`);
-      const materials = await this.loadPanoramaCube(panoId);
+      // 1. Pre-load new panorama
+      const newMaterials = await this.loadPanoramaCube(link.panoId);
       
-      // Dispose old materials
+      // 2. Animate: zoom + fade (simple version)
+      const duration = 400; // ms
+      const startTime = performance.now();
+      
+      const animate = () => {
+        const elapsed = performance.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        // Ease out cubic
+        const eased = 1 - Math.pow(1 - progress, 3);
+        
+        // Zoom effect
+        this.camera.fov = originalFov - (originalFov - targetFov) * Math.sin(eased * Math.PI);
+        this.camera.updateProjectionMatrix();
+        
+        // Fade out old materials at midpoint
+        if (progress > 0.3 && Array.isArray(this.panoramaSphere.material)) {
+          const fadeProgress = (progress - 0.3) / 0.7;
+          this.panoramaSphere.material.forEach(m => {
+            (m as THREE.MeshBasicMaterial).opacity = 1 - fadeProgress;
+          });
+        }
+        
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          // 3. Snap to new panorama
+          if (Array.isArray(this.panoramaSphere.material)) {
+            this.panoramaSphere.material.forEach(m => {
+              const mat = m as THREE.MeshBasicMaterial;
+              if (mat.map) mat.map.dispose();
+              mat.dispose();
+            });
+          }
+          
+          this.panoramaSphere.material = newMaterials;
+          this.currentPanoId = link.panoId;
+          this.currentLat = link.lat;
+          this.currentLng = link.lng;
+          
+          // Reset camera
+          this.camera.fov = originalFov;
+          this.camera.updateProjectionMatrix();
+          
+          // Scan for new links
+          this.scanForLinks();
+          
+          if (nameEl) nameEl.textContent = `📍 ${link.lat.toFixed(4)}, ${link.lng.toFixed(4)}`;
+          
+          this.isTransitioning = false;
+          console.log(`✅ Transition complete`);
+        }
+      };
+      
+      // Make materials transparent for fading
       if (Array.isArray(this.panoramaSphere.material)) {
         this.panoramaSphere.material.forEach(m => {
-          const mat = m as THREE.MeshBasicMaterial;
-          if (mat.map) mat.map.dispose();
-          mat.dispose();
+          (m as THREE.MeshBasicMaterial).transparent = true;
         });
       }
       
-      this.panoramaSphere.material = materials;
-      this.currentPanoId = panoId;
-      this.currentLat = lat;
-      this.currentLng = lng;
+      animate();
       
-      if (nameEl) nameEl.textContent = `📍 ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-      
-      console.log(`✅ Loaded panorama`);
     } catch (error) {
-      console.error('Failed to load panorama:', error);
+      console.error('Transition failed:', error);
+      this.camera.fov = originalFov;
+      this.camera.updateProjectionMatrix();
+      this.isTransitioning = false;
     }
+  }
+  
+  private async scanForLinks(): Promise<void> {
+    if (!this.currentLat || !this.currentLng) return;
     
-    this.isLoading = false;
+    console.log('🔍 Scanning for nearby panoramas...');
+    this.availableLinks = [];
+    
+    // Scan 8 directions at ~15m distance
+    const distance = 0.00015; // ~15m in degrees
+    const directions = [0, 45, 90, 135, 180, 225, 270, 315]; // degrees
+    
+    const scanPromises = directions.map(async (deg) => {
+      const rad = deg * Math.PI / 180;
+      const lat = this.currentLat + Math.cos(rad) * distance;
+      const lng = this.currentLng + Math.sin(rad) * distance;
+      
+      const panoId = await this.getPanoramaId(lat, lng);
+      
+      if (panoId && panoId !== this.currentPanoId) {
+        // Convert compass heading to Three.js heading
+        // In Three.js: 0 = -Z (north), positive = clockwise
+        const heading = -deg * Math.PI / 180;
+        
+        this.availableLinks.push({ panoId, heading, lat, lng });
+        console.log(`  ✓ Found link at ${deg}°: ${panoId}`);
+      }
+    });
+    
+    await Promise.all(scanPromises);
+    console.log(`📍 Found ${this.availableLinks.length} navigation links`);
   }
   
   private render(): void {
