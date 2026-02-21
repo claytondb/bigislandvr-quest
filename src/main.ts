@@ -412,22 +412,26 @@ class BigIslandVRApp {
   
   private setupNavigation(): void {
     // Create 4 navigation arrows (forward, back, left, right)
-    const arrowGeometry = new THREE.ConeGeometry(0.5, 1, 4);
+    // Larger arrows for easier clicking
+    const arrowGeometry = new THREE.ConeGeometry(1.5, 2, 8);
     arrowGeometry.rotateX(Math.PI / 2); // Point forward
     
     const arrowMaterial = new THREE.MeshBasicMaterial({ 
       color: 0x00ff88, 
       transparent: true, 
-      opacity: 0.7 
+      opacity: 0.8,
+      depthTest: false  // Always render on top
     });
     
-    // Arrow positions: forward, back, left, right
+    // Arrow positions: closer and at eye level for easier clicking
     const directions = [
-      { name: 'forward', pos: new THREE.Vector3(0, -1, -8), rot: 0 },
-      { name: 'back', pos: new THREE.Vector3(0, -1, 8), rot: Math.PI },
-      { name: 'left', pos: new THREE.Vector3(-8, -1, 0), rot: Math.PI / 2 },
-      { name: 'right', pos: new THREE.Vector3(8, -1, 0), rot: -Math.PI / 2 },
+      { name: 'forward', pos: new THREE.Vector3(0, 0, -6), rot: 0 },
+      { name: 'back', pos: new THREE.Vector3(0, 0, 6), rot: Math.PI },
+      { name: 'left', pos: new THREE.Vector3(-6, 0, 0), rot: Math.PI / 2 },
+      { name: 'right', pos: new THREE.Vector3(6, 0, 0), rot: -Math.PI / 2 },
     ];
+    
+    console.log('🎯 Setting up navigation arrows');
     
     directions.forEach(dir => {
       const arrow = new THREE.Mesh(arrowGeometry.clone(), arrowMaterial.clone());
@@ -473,7 +477,10 @@ class BigIslandVRApp {
   }
   
   private async handleNavClick(event: MouseEvent): Promise<void> {
-    if (this.isLoading) return;
+    if (this.isLoading) {
+      console.log('🚫 Click ignored - still loading');
+      return;
+    }
     
     const mouse = new THREE.Vector2(
       (event.clientX / window.innerWidth) * 2 - 1,
@@ -483,39 +490,51 @@ class BigIslandVRApp {
     this.raycaster.setFromCamera(mouse, this.camera);
     const intersects = this.raycaster.intersectObjects(this.navArrows);
     
+    console.log(`🖱️ Click at (${mouse.x.toFixed(2)}, ${mouse.y.toFixed(2)}), intersects: ${intersects.length}`);
+    
     if (intersects.length > 0) {
       const direction = intersects[0].object.userData.direction;
+      console.log(`➡️ Arrow clicked: ${direction}`);
       await this.navigateInDirection(direction);
     }
   }
   
   private async navigateInDirection(direction: string): Promise<void> {
-    if (!this.currentLat || !this.currentLng) return;
+    console.log(`🚶 Navigate called: ${direction}, currentLat: ${this.currentLat}, currentLng: ${this.currentLng}`);
+    
+    if (!this.currentLat || !this.currentLng) {
+      console.log('❌ No current position set');
+      return;
+    }
     
     // Calculate new position ~15 meters in the given direction
-    // Adjust based on current camera yaw
+    // Note: yaw=0 means looking at -Z (north in Three.js convention)
     const distance = 0.00015; // ~15 meters in lat/lng
     
-    let bearing = this.yaw; // Current facing direction
+    let bearing = -this.yaw; // Convert from Three.js to compass bearing
     
     switch (direction) {
       case 'forward': break; // Use current yaw
       case 'back': bearing += Math.PI; break;
-      case 'left': bearing += Math.PI / 2; break;
-      case 'right': bearing -= Math.PI / 2; break;
+      case 'left': bearing -= Math.PI / 2; break;
+      case 'right': bearing += Math.PI / 2; break;
     }
     
-    // Calculate new lat/lng
+    // Calculate new lat/lng (lat increases going north, lng increases going east)
     const newLat = this.currentLat + Math.cos(bearing) * distance;
-    const newLng = this.currentLng - Math.sin(bearing) * distance;
+    const newLng = this.currentLng + Math.sin(bearing) * distance;
     
-    console.log(`🚶 Navigating ${direction}: (${newLat.toFixed(6)}, ${newLng.toFixed(6)})`);
+    console.log(`🧭 Bearing: ${(bearing * 180 / Math.PI).toFixed(1)}°, target: (${newLat.toFixed(6)}, ${newLng.toFixed(6)})`);
     
     // Try to find a panorama at the new location
     const panoId = await this.getPanoramaId(newLat, newLng);
     
+    console.log(`🔍 Found pano: ${panoId} (current: ${this.currentPanoId})`);
+    
     if (panoId && panoId !== this.currentPanoId) {
       await this.loadPanoramaAtPosition(panoId, newLat, newLng);
+    } else if (panoId === this.currentPanoId) {
+      console.log('⚠️ Same panorama - try a different direction');
     } else {
       console.log('❌ No panorama found in that direction');
     }
