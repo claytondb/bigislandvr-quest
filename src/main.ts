@@ -30,6 +30,13 @@ class BigIslandVRApp {
   private pitch = 0;  // Vertical rotation (radians), clamped to avoid flipping
   private isLoading = false;
   
+  // Navigation
+  private currentLat = 0;
+  private currentLng = 0;
+  private currentPanoId: string | null = null;
+  private navArrows: THREE.Mesh[] = [];
+  private raycaster = new THREE.Raycaster();
+  
   constructor() {
     console.log('🌴 Big Island VR Quest starting...');
     
@@ -59,6 +66,7 @@ class BigIslandVRApp {
     // Setup
     this.setupVR();
     this.setupControls();
+    this.setupNavigation();
     
     // Load first location
     this.goToLocation(0);
@@ -183,6 +191,11 @@ class BigIslandVRApp {
         // Apply new materials (one per cube face)
         this.panoramaSphere.material = materials;
         
+        // Store current position for navigation
+        this.currentPanoId = panoId;
+        this.currentLat = location.lat;
+        this.currentLng = location.lng;
+        
         console.log(`✅ Loaded panorama cube for ${location.name}`);
       } else {
         throw new Error('No pano ID');
@@ -219,14 +232,14 @@ class BigIslandVRApp {
   }
   
   private async loadPanoramaCube(panoId: string): Promise<THREE.Material[]> {
-    // Load 6 images for cube faces: right, left, top, bottom, front, back
+    // Load 6 cube faces, each at higher resolution using 2x2 tile grid
     // Street View: heading 0=north, 90=east, 180=south, 270=west
     // Three.js cube faces order: +X, -X, +Y, -Y, +Z, -Z
     
-    const size = 640;
-    const fov = 90;
+    const tileSize = 640;  // Max size per request
+    const fov = 45;        // Smaller FOV = higher detail, need 2x2 grid per face
     
-    // Define the 6 faces with their Street View parameters
+    // Define the 6 faces with their center headings
     const faces = [
       { name: 'right',  heading: 90,  pitch: 0 },   // +X (East)
       { name: 'left',   heading: 270, pitch: 0 },   // -X (West)
@@ -236,12 +249,12 @@ class BigIslandVRApp {
       { name: 'back',   heading: 180, pitch: 0 },   // -Z (South)
     ];
     
-    console.log(`🖼️ Loading 6 cube faces for pano ${panoId}...`);
+    console.log(`🖼️ Loading 6 cube faces (2x2 tiles each) for pano ${panoId}...`);
     
     const materials: THREE.Material[] = [];
     
     for (const face of faces) {
-      const texture = await this.loadFaceTexture(panoId, face.heading, face.pitch, size, fov);
+      const texture = await this.loadHighResFaceTexture(panoId, face.heading, face.pitch, tileSize);
       const material = new THREE.MeshBasicMaterial({ 
         map: texture, 
         side: THREE.BackSide 
@@ -263,6 +276,61 @@ class BigIslandVRApp {
     
     console.log(`📸 Finished loading 6 cube faces`);
     return materials;
+  }
+  
+  private async loadHighResFaceTexture(panoId: string, centerHeading: number, centerPitch: number, tileSize: number): Promise<THREE.Texture> {
+    // For top/bottom faces, use single image (they're often less detailed anyway)
+    if (Math.abs(centerPitch) > 45) {
+      return this.loadFaceTexture(panoId, centerHeading, centerPitch, tileSize, 90);
+    }
+    
+    // For side faces, load 2x2 grid at 45° FOV each for higher resolution
+    const canvas = document.createElement('canvas');
+    canvas.width = tileSize * 2;
+    canvas.height = tileSize * 2;
+    const ctx = canvas.getContext('2d')!;
+    
+    // Fill with fallback
+    ctx.fillStyle = '#1A3A4A';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // 2x2 grid offsets: top-left, top-right, bottom-left, bottom-right
+    const offsets = [
+      { dx: 0, dy: 0, headingOff: -22.5, pitchOff: 22.5 },
+      { dx: 1, dy: 0, headingOff: 22.5, pitchOff: 22.5 },
+      { dx: 0, dy: 1, headingOff: -22.5, pitchOff: -22.5 },
+      { dx: 1, dy: 1, headingOff: 22.5, pitchOff: -22.5 },
+    ];
+    
+    const loadPromises = offsets.map(async (offset) => {
+      const heading = (centerHeading + offset.headingOff + 360) % 360;
+      const pitch = centerPitch + offset.pitchOff;
+      
+      const img = await this.loadImageAsync(panoId, heading, pitch, tileSize, 45);
+      if (img) {
+        ctx.drawImage(img, offset.dx * tileSize, offset.dy * tileSize, tileSize, tileSize);
+      }
+    });
+    
+    await Promise.all(loadPromises);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    return texture;
+  }
+  
+  private loadImageAsync(panoId: string, heading: number, pitch: number, size: number, fov: number): Promise<HTMLImageElement | null> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      
+      const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}x${size}&pano=${panoId}&heading=${heading}&pitch=${pitch}&fov=${fov}&key=${API_KEY}`;
+      
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
   }
   
   private loadFaceTexture(panoId: string, heading: number, pitch: number, size: number, fov: number): Promise<THREE.Texture> {
@@ -340,6 +408,151 @@ class BigIslandVRApp {
     material.map = texture;
     material.color.setHex(0xFFFFFF);
     material.needsUpdate = true;
+  }
+  
+  private setupNavigation(): void {
+    // Create 4 navigation arrows (forward, back, left, right)
+    const arrowGeometry = new THREE.ConeGeometry(0.5, 1, 4);
+    arrowGeometry.rotateX(Math.PI / 2); // Point forward
+    
+    const arrowMaterial = new THREE.MeshBasicMaterial({ 
+      color: 0x00ff88, 
+      transparent: true, 
+      opacity: 0.7 
+    });
+    
+    // Arrow positions: forward, back, left, right
+    const directions = [
+      { name: 'forward', pos: new THREE.Vector3(0, -1, -8), rot: 0 },
+      { name: 'back', pos: new THREE.Vector3(0, -1, 8), rot: Math.PI },
+      { name: 'left', pos: new THREE.Vector3(-8, -1, 0), rot: Math.PI / 2 },
+      { name: 'right', pos: new THREE.Vector3(8, -1, 0), rot: -Math.PI / 2 },
+    ];
+    
+    directions.forEach(dir => {
+      const arrow = new THREE.Mesh(arrowGeometry.clone(), arrowMaterial.clone());
+      arrow.position.copy(dir.pos);
+      arrow.rotation.y = dir.rot;
+      arrow.userData = { direction: dir.name };
+      this.scene.add(arrow);
+      this.navArrows.push(arrow);
+    });
+    
+    // Click handler for navigation
+    const canvas = this.renderer.domElement;
+    canvas.addEventListener('click', (e) => this.handleNavClick(e));
+    
+    // Hover effect
+    canvas.addEventListener('mousemove', (e) => this.handleNavHover(e));
+  }
+  
+  private handleNavHover(event: MouseEvent): void {
+    const mouse = new THREE.Vector2(
+      (event.clientX / window.innerWidth) * 2 - 1,
+      -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    
+    this.raycaster.setFromCamera(mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.navArrows);
+    
+    // Reset all arrows
+    this.navArrows.forEach(arrow => {
+      (arrow.material as THREE.MeshBasicMaterial).opacity = 0.7;
+      arrow.scale.setScalar(1);
+    });
+    
+    // Highlight hovered arrow
+    if (intersects.length > 0) {
+      const arrow = intersects[0].object as THREE.Mesh;
+      (arrow.material as THREE.MeshBasicMaterial).opacity = 1;
+      arrow.scale.setScalar(1.3);
+      this.renderer.domElement.style.cursor = 'pointer';
+    } else {
+      this.renderer.domElement.style.cursor = 'grab';
+    }
+  }
+  
+  private async handleNavClick(event: MouseEvent): Promise<void> {
+    if (this.isLoading) return;
+    
+    const mouse = new THREE.Vector2(
+      (event.clientX / window.innerWidth) * 2 - 1,
+      -(event.clientY / window.innerHeight) * 2 + 1
+    );
+    
+    this.raycaster.setFromCamera(mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.navArrows);
+    
+    if (intersects.length > 0) {
+      const direction = intersects[0].object.userData.direction;
+      await this.navigateInDirection(direction);
+    }
+  }
+  
+  private async navigateInDirection(direction: string): Promise<void> {
+    if (!this.currentLat || !this.currentLng) return;
+    
+    // Calculate new position ~15 meters in the given direction
+    // Adjust based on current camera yaw
+    const distance = 0.00015; // ~15 meters in lat/lng
+    
+    let bearing = this.yaw; // Current facing direction
+    
+    switch (direction) {
+      case 'forward': break; // Use current yaw
+      case 'back': bearing += Math.PI; break;
+      case 'left': bearing += Math.PI / 2; break;
+      case 'right': bearing -= Math.PI / 2; break;
+    }
+    
+    // Calculate new lat/lng
+    const newLat = this.currentLat + Math.cos(bearing) * distance;
+    const newLng = this.currentLng - Math.sin(bearing) * distance;
+    
+    console.log(`🚶 Navigating ${direction}: (${newLat.toFixed(6)}, ${newLng.toFixed(6)})`);
+    
+    // Try to find a panorama at the new location
+    const panoId = await this.getPanoramaId(newLat, newLng);
+    
+    if (panoId && panoId !== this.currentPanoId) {
+      await this.loadPanoramaAtPosition(panoId, newLat, newLng);
+    } else {
+      console.log('❌ No panorama found in that direction');
+    }
+  }
+  
+  private async loadPanoramaAtPosition(panoId: string, lat: number, lng: number): Promise<void> {
+    this.isLoading = true;
+    
+    const nameEl = document.getElementById('location-name');
+    if (nameEl) nameEl.textContent = '⏳ Loading...';
+    
+    try {
+      console.log(`🔍 Loading pano: ${panoId}`);
+      const materials = await this.loadPanoramaCube(panoId);
+      
+      // Dispose old materials
+      if (Array.isArray(this.panoramaSphere.material)) {
+        this.panoramaSphere.material.forEach(m => {
+          const mat = m as THREE.MeshBasicMaterial;
+          if (mat.map) mat.map.dispose();
+          mat.dispose();
+        });
+      }
+      
+      this.panoramaSphere.material = materials;
+      this.currentPanoId = panoId;
+      this.currentLat = lat;
+      this.currentLng = lng;
+      
+      if (nameEl) nameEl.textContent = `📍 ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      
+      console.log(`✅ Loaded panorama`);
+    } catch (error) {
+      console.error('Failed to load panorama:', error);
+    }
+    
+    this.isLoading = false;
   }
   
   private render(): void {
