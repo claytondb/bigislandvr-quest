@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="ocean" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#0D3B66"/>
+      <stop offset="100%" style="stop-color:#1A6B7C"/>
+    </linearGradient>
+    <linearGradient id="island" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#2D5016"/>
+      <stop offset="100%" style="stop-color:#4A7C23"/>
+    </linearGradient>
+  </defs>
+  <!-- Ocean background -->
+  <circle cx="50" cy="50" r="48" fill="url(#ocean)"/>
+  <!-- Island silhouette -->
+  <path d="M15 65 Q25 45 35 50 Q45 35 55 40 Q65 30 75 45 Q85 50 85 65 Z" fill="url(#island)"/>
+  <!-- Volcano peak -->
+  <path d="M55 40 L60 25 L65 40 Z" fill="#8B4513"/>
+  <!-- Volcano smoke -->
+  <circle cx="60" cy="20" r="5" fill="rgba(255,255,255,0.6)"/>
+  <circle cx="63" cy="15" r="4" fill="rgba(255,255,255,0.4)"/>
+  <!-- Palm tree -->
+  <rect x="24" y="48" width="3" height="17" fill="#5D4037"/>
+  <ellipse cx="26" cy="46" rx="8" ry="4" fill="#228B22" transform="rotate(-30 26 46)"/>
+  <ellipse cx="26" cy="46" rx="8" ry="4" fill="#228B22" transform="rotate(30 26 46)"/>
+  <ellipse cx="26" cy="46" rx="8" ry="4" fill="#228B22" transform="rotate(90 26 46)"/>
+</svg>
