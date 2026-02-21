@@ -100,7 +100,7 @@ class BigIslandVRApp {
       const dx = e.clientX - this.previousMousePosition.x;
       const dy = e.clientY - this.previousMousePosition.y;
       this.spherical.theta -= dx * 0.005;
-      this.spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, this.spherical.phi + dy * 0.005));
+      this.spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, this.spherical.phi - dy * 0.005));
       this.camera.lookAt(new THREE.Vector3().setFromSpherical(this.spherical));
       this.previousMousePosition = { x: e.clientX, y: e.clientY };
     });
