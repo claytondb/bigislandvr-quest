@@ -48,10 +48,10 @@ class BigIslandVRApp {
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     this.camera.position.set(0, 1.6, 0);
     
-    // Panorama sphere
+    // Panorama sphere - scale(-1,1,1) flips it inside-out so we see interior
     const geometry = new THREE.SphereGeometry(500, 64, 32);
     geometry.scale(-1, 1, 1);
-    const material = new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.BackSide });
+    const material = new THREE.MeshBasicMaterial({ color: 0x333333 }); // FrontSide (default) since geometry is flipped
     this.panoramaSphere = new THREE.Mesh(geometry, material);
     this.scene.add(this.panoramaSphere);
     
@@ -156,7 +156,12 @@ class BigIslandVRApp {
         material.color.setHex(0xFFFFFF);
         material.needsUpdate = true;
         
-        console.log(`✅ Loaded panorama for ${location.name}`);
+        // Debug: show texture dimensions
+        console.log(`✅ Loaded panorama for ${location.name}`, {
+          textureWidth: texture.image?.width,
+          textureHeight: texture.image?.height,
+          materialHasMap: !!material.map
+        });
       } else {
         throw new Error('No pano ID');
       }
@@ -265,8 +270,18 @@ class BigIslandVRApp {
     
     console.log(`📸 Finished loading ${loadedCount}/${headings.length} images`);
     
+    // DEBUG: Show canvas in corner of screen
+    const debugCanvas = document.getElementById('debug-canvas') as HTMLCanvasElement;
+    if (debugCanvas) {
+      const debugCtx = debugCanvas.getContext('2d')!;
+      debugCanvas.width = 400;
+      debugCanvas.height = 200;
+      debugCtx.drawImage(canvas, 0, 0, 400, 200);
+    }
+    
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
     return texture;
   }
   
