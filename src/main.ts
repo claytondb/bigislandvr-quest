@@ -48,10 +48,10 @@ class BigIslandVRApp {
     this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     this.camera.position.set(0, 1.6, 0);
     
-    // Panorama sphere - scale(-1,1,1) flips it inside-out so we see interior
-    const geometry = new THREE.SphereGeometry(500, 64, 32);
-    geometry.scale(-1, 1, 1);
-    const material = new THREE.MeshBasicMaterial({ color: 0x333333 }); // FrontSide (default) since geometry is flipped
+    // Panorama skybox - using a large box that we view from inside
+    // This works better with perspective Street View images
+    const geometry = new THREE.BoxGeometry(1000, 1000, 1000);
+    const material = new THREE.MeshBasicMaterial({ color: 0x333333, side: THREE.BackSide });
     this.panoramaSphere = new THREE.Mesh(geometry, material);
     this.scene.add(this.panoramaSphere);
     
@@ -143,25 +143,31 @@ class BigIslandVRApp {
     this.spherical.phi = THREE.MathUtils.degToRad(90 - (location.pitch || 0));
     this.camera.lookAt(new THREE.Vector3().setFromSpherical(this.spherical));
     
-    // Try to load Street View panorama
+    // Try to load Street View panorama as cube map
     try {
       const panoId = await this.getPanoramaId(location.lat, location.lng);
       if (panoId) {
         console.log(`🔍 Found pano: ${panoId}`);
-        const texture = await this.loadPanoramaTiles(panoId, 'medium');
+        const materials = await this.loadPanoramaCube(panoId);
         
-        const material = this.panoramaSphere.material as THREE.MeshBasicMaterial;
-        if (material.map) material.map.dispose();
-        material.map = texture;
-        material.color.setHex(0xFFFFFF);
-        material.needsUpdate = true;
+        // Dispose old materials
+        if (Array.isArray(this.panoramaSphere.material)) {
+          this.panoramaSphere.material.forEach(m => {
+            if ((m as THREE.MeshBasicMaterial).map) {
+              (m as THREE.MeshBasicMaterial).map!.dispose();
+            }
+            m.dispose();
+          });
+        } else if (this.panoramaSphere.material) {
+          const mat = this.panoramaSphere.material as THREE.MeshBasicMaterial;
+          if (mat.map) mat.map.dispose();
+          mat.dispose();
+        }
         
-        // Debug: show texture dimensions
-        console.log(`✅ Loaded panorama for ${location.name}`, {
-          textureWidth: texture.image?.width,
-          textureHeight: texture.image?.height,
-          materialHasMap: !!material.map
-        });
+        // Apply new materials (one per cube face)
+        this.panoramaSphere.material = materials;
+        
+        console.log(`✅ Loaded panorama cube for ${location.name}`);
       } else {
         throw new Error('No pano ID');
       }
@@ -196,93 +202,93 @@ class BigIslandVRApp {
     }
   }
   
-  private async loadPanoramaTiles(panoId: string, quality: 'preview' | 'medium'): Promise<THREE.Texture> {
-    // Use Street View Static API - has CORS support
-    // Load 12 images at 30° intervals for better 360° coverage
+  private async loadPanoramaCube(panoId: string): Promise<THREE.Material[]> {
+    // Load 6 images for cube faces: right, left, top, bottom, front, back
+    // Street View: heading 0=north, 90=east, 180=south, 270=west
+    // Three.js cube faces order: +X, -X, +Y, -Y, +Z, -Z
     
-    const level = ZOOM_LEVELS[quality];
-    const canvas = document.createElement('canvas');
-    canvas.width = level.width;
-    canvas.height = level.height;
-    const ctx = canvas.getContext('2d')!;
+    const size = 640;
+    const fov = 90;
     
-    // Fill with dark background initially
-    ctx.fillStyle = '#1A3A4A';
-    ctx.fillRect(0, 0, level.width, level.height);
+    // Define the 6 faces with their Street View parameters
+    const faces = [
+      { name: 'right',  heading: 90,  pitch: 0 },   // +X (East)
+      { name: 'left',   heading: 270, pitch: 0 },   // -X (West)
+      { name: 'top',    heading: 0,   pitch: 90 },  // +Y (Up)
+      { name: 'bottom', heading: 0,   pitch: -90 }, // -Y (Down)
+      { name: 'front',  heading: 0,   pitch: 0 },   // +Z (North)
+      { name: 'back',   heading: 180, pitch: 0 },   // -Z (South)
+    ];
     
-    // Load 12 images at 30° intervals with 120° FOV for overlap
-    const headings = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
-    const fov = 120; // Wide FOV for overlap
+    console.log(`🖼️ Loading 6 cube faces for pano ${panoId}...`);
     
-    console.log(`🖼️ Loading ${headings.length} Street View images for pano ${panoId}...`);
+    const materials: THREE.Material[] = [];
     
-    let loadedCount = 0;
-    
-    const loadPromises = headings.map((heading) => {
-      return new Promise<void>((resolve) => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        
-        // Street View Static API URL - max 640x640
-        const url = `https://maps.googleapis.com/maps/api/streetview?size=640x640&pano=${panoId}&heading=${heading}&pitch=0&fov=${fov}&key=${API_KEY}`;
-        
-        img.onload = () => {
-          loadedCount++;
-          
-          // Each image covers `fov` degrees of the 360° panorama
-          // Canvas width represents 360°, so each image width = canvas * (fov/360)
-          const drawWidth = level.width * (fov / 360);
-          const drawHeight = level.height;
-          
-          // Map heading to canvas x position
-          // In equirectangular: x=0 is heading 180° (behind), x=width/2 is heading 0° (front)
-          // Heading 0° should be at center of canvas
-          const normalizedHeading = ((heading + 180) % 360) / 360;
-          const centerX = normalizedHeading * level.width;
-          
-          // Draw centered at the heading position
-          const drawX = centerX - drawWidth / 2;
-          ctx.drawImage(img, drawX, 0, drawWidth, drawHeight);
-          
-          // Wrap around for seamless 360
-          if (drawX < 0) {
-            ctx.drawImage(img, level.width + drawX, 0, drawWidth, drawHeight);
-          }
-          if (drawX + drawWidth > level.width) {
-            ctx.drawImage(img, drawX - level.width, 0, drawWidth, drawHeight);
-          }
-          
-          console.log(`✓ Loaded heading ${heading}° (${loadedCount}/${headings.length})`);
-          resolve();
-        };
-        
-        img.onerror = (e) => {
-          console.error(`❌ FAILED to load heading ${heading}°:`, e);
-          console.error(`URL was: ${url}`);
-          resolve();
-        };
-        
-        img.src = url;
+    for (const face of faces) {
+      const texture = await this.loadFaceTexture(panoId, face.heading, face.pitch, size, fov);
+      const material = new THREE.MeshBasicMaterial({ 
+        map: texture, 
+        side: THREE.BackSide 
       });
-    });
-    
-    await Promise.all(loadPromises);
-    
-    console.log(`📸 Finished loading ${loadedCount}/${headings.length} images`);
-    
-    // DEBUG: Show canvas in corner of screen
-    const debugCanvas = document.getElementById('debug-canvas') as HTMLCanvasElement;
-    if (debugCanvas) {
-      const debugCtx = debugCanvas.getContext('2d')!;
-      debugCanvas.width = 400;
-      debugCanvas.height = 200;
-      debugCtx.drawImage(canvas, 0, 0, 400, 200);
+      materials.push(material);
     }
     
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
-    return texture;
+    // DEBUG: Show front face in corner
+    const debugCanvas = document.getElementById('debug-canvas') as HTMLCanvasElement;
+    if (debugCanvas && materials[4]) {
+      const debugCtx = debugCanvas.getContext('2d')!;
+      debugCanvas.width = 200;
+      debugCanvas.height = 200;
+      const frontMat = materials[4] as THREE.MeshBasicMaterial;
+      if (frontMat.map?.image) {
+        debugCtx.drawImage(frontMat.map.image, 0, 0, 200, 200);
+      }
+    }
+    
+    console.log(`📸 Finished loading 6 cube faces`);
+    return materials;
+  }
+  
+  private loadFaceTexture(panoId: string, heading: number, pitch: number, size: number, fov: number): Promise<THREE.Texture> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      
+      const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}x${size}&pano=${panoId}&heading=${heading}&pitch=${pitch}&fov=${fov}&key=${API_KEY}`;
+      
+      img.onload = () => {
+        console.log(`✓ Loaded face: heading=${heading}°, pitch=${pitch}°`);
+        const texture = new THREE.Texture(img);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        resolve(texture);
+      };
+      
+      img.onerror = () => {
+        console.error(`❌ Failed to load face: heading=${heading}°, pitch=${pitch}°`);
+        // Return a fallback colored texture
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#1A3A4A';
+        ctx.fillRect(0, 0, size, size);
+        ctx.fillStyle = '#fff';
+        ctx.font = '24px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${heading}°`, size/2, size/2);
+        const texture = new THREE.CanvasTexture(canvas);
+        resolve(texture);
+      };
+      
+      img.src = url;
+    });
+  }
+  
+  // Keep old method name for compatibility but redirect to cube
+  private async loadPanoramaTiles(panoId: string, quality: 'preview' | 'medium'): Promise<THREE.Texture> {
+    // This is now handled by loadPanoramaCube, return dummy
+    return new THREE.Texture();
   }
   
   private showFallbackTexture(location: any): void {
