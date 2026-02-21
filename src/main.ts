@@ -26,7 +26,8 @@ class BigIslandVRApp {
   private currentLocationIndex = 0;
   private isDragging = false;
   private previousMousePosition = { x: 0, y: 0 };
-  private spherical = new THREE.Spherical(1, Math.PI / 2, 0);
+  private yaw = 0;    // Horizontal rotation (radians)
+  private pitch = 0;  // Vertical rotation (radians), clamped to avoid flipping
   private isLoading = false;
   
   constructor() {
@@ -99,9 +100,19 @@ class BigIslandVRApp {
       if (!this.isDragging) return;
       const dx = e.clientX - this.previousMousePosition.x;
       const dy = e.clientY - this.previousMousePosition.y;
-      this.spherical.theta -= dx * 0.005;
-      this.spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, this.spherical.phi - dy * 0.005));
-      this.camera.lookAt(new THREE.Vector3().setFromSpherical(this.spherical));
+      
+      // Update yaw (horizontal) and pitch (vertical)
+      this.yaw -= dx * 0.005;
+      this.pitch -= dy * 0.005;
+      
+      // Clamp pitch to prevent flipping (roughly -85° to +85°)
+      this.pitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.pitch));
+      
+      // Apply rotation to camera using Euler angles (YXZ order for FPS-style)
+      this.camera.rotation.order = 'YXZ';
+      this.camera.rotation.y = this.yaw;
+      this.camera.rotation.x = this.pitch;
+      
       this.previousMousePosition = { x: e.clientX, y: e.clientY };
     });
     
@@ -138,10 +149,15 @@ class BigIslandVRApp {
     
     console.log(`📍 Loading: ${location.name}`);
     
-    // Set camera direction
-    this.spherical.theta = THREE.MathUtils.degToRad(location.heading - 90);
-    this.spherical.phi = THREE.MathUtils.degToRad(90 - (location.pitch || 0));
-    this.camera.lookAt(new THREE.Vector3().setFromSpherical(this.spherical));
+    // Set camera direction using yaw/pitch
+    // Heading: 0=North, 90=East, 180=South, 270=West
+    // Convert to yaw: we want heading 0 to look at -Z (Three.js forward)
+    this.yaw = THREE.MathUtils.degToRad(-location.heading);
+    this.pitch = THREE.MathUtils.degToRad(location.pitch || 0);
+    
+    this.camera.rotation.order = 'YXZ';
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
     
     // Try to load Street View panorama as cube map
     try {
