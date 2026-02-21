@@ -561,41 +561,101 @@ class BigIslandVRApp {
     const nameEl = document.getElementById('location-name');
     if (nameEl) nameEl.textContent = '⏳ Moving...';
     
-    // Store original FOV for animation
+    // Calculate movement direction (in world space)
+    const moveDirection = new THREE.Vector3(
+      Math.sin(-link.heading),
+      0,
+      Math.cos(-link.heading)
+    ).normalize();
+    
+    // Store original values
     const originalFov = this.camera.fov;
-    const targetFov = originalFov * 0.7; // Zoom in effect
+    const originalScale = this.panoramaSphere.scale.clone();
+    const originalPosition = this.panoramaSphere.position.clone();
     
     try {
-      // 1. Pre-load new panorama
-      const newMaterials = await this.loadPanoramaCube(link.panoId);
+      // 1. Start loading new panorama immediately (parallel with animation)
+      const loadPromise = this.loadPanoramaCube(link.panoId);
       
-      // 2. Animate: zoom + fade (simple version)
-      const duration = 400; // ms
+      // 2. Create second skybox for crossfade (will hold new panorama)
+      const newSkybox = new THREE.Mesh(
+        new THREE.BoxGeometry(1000, 1000, 1000),
+        new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, transparent: true, opacity: 0 })
+      );
+      this.scene.add(newSkybox);
+      
+      // 3. Animation parameters
+      const duration = 600; // ms - slightly longer for smoother feel
       const startTime = performance.now();
+      
+      // Make old materials transparent
+      if (Array.isArray(this.panoramaSphere.material)) {
+        this.panoramaSphere.material.forEach(m => {
+          (m as THREE.MeshBasicMaterial).transparent = true;
+        });
+      }
+      
+      // Wait for new panorama to load
+      const newMaterials = await loadPromise;
+      (newSkybox as THREE.Mesh).material = newMaterials as THREE.Material[];
+      
+      // Make new materials transparent and start invisible
+      newMaterials.forEach(m => {
+        (m as THREE.MeshBasicMaterial).transparent = true;
+        (m as THREE.MeshBasicMaterial).opacity = 0;
+      });
       
       const animate = () => {
         const elapsed = performance.now() - startTime;
         const progress = Math.min(elapsed / duration, 1);
         
-        // Ease out cubic
-        const eased = 1 - Math.pow(1 - progress, 3);
+        // Smooth easing (ease-in-out cubic)
+        const eased = progress < 0.5 
+          ? 4 * progress * progress * progress 
+          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
         
-        // Zoom effect
-        this.camera.fov = originalFov - (originalFov - targetFov) * Math.sin(eased * Math.PI);
-        this.camera.updateProjectionMatrix();
+        // === OLD PANORAMA: Move away + shrink + fade ===
+        // Move the old skybox backward (opposite to travel direction)
+        const moveDistance = eased * 200; // How far to "travel"
+        this.panoramaSphere.position.set(
+          originalPosition.x - moveDirection.x * moveDistance,
+          originalPosition.y,
+          originalPosition.z - moveDirection.z * moveDistance
+        );
         
-        // Fade out old materials at midpoint
-        if (progress > 0.3 && Array.isArray(this.panoramaSphere.material)) {
-          const fadeProgress = (progress - 0.3) / 0.7;
+        // Slight scale up (rushing past effect)
+        const scaleMultiplier = 1 + eased * 0.3;
+        this.panoramaSphere.scale.set(
+          originalScale.x * scaleMultiplier,
+          originalScale.y * scaleMultiplier,
+          originalScale.z * scaleMultiplier
+        );
+        
+        // Fade out old panorama (start at 20%, complete by 80%)
+        if (Array.isArray(this.panoramaSphere.material)) {
+          const fadeOutProgress = Math.max(0, Math.min(1, (progress - 0.2) / 0.6));
           this.panoramaSphere.material.forEach(m => {
-            (m as THREE.MeshBasicMaterial).opacity = 1 - fadeProgress;
+            (m as THREE.MeshBasicMaterial).opacity = 1 - fadeOutProgress;
           });
         }
+        
+        // === NEW PANORAMA: Fade in (start at 30%, complete by 100%) ===
+        const fadeInProgress = Math.max(0, Math.min(1, (progress - 0.3) / 0.7));
+        newMaterials.forEach(m => {
+          (m as THREE.MeshBasicMaterial).opacity = fadeInProgress;
+        });
+        
+        // === CAMERA: Subtle zoom effect ===
+        const zoomProgress = Math.sin(progress * Math.PI); // Peaks at middle
+        this.camera.fov = originalFov - zoomProgress * 15; // Zoom in up to 15 degrees
+        this.camera.updateProjectionMatrix();
         
         if (progress < 1) {
           requestAnimationFrame(animate);
         } else {
-          // 3. Snap to new panorama
+          // === CLEANUP ===
+          // Remove and dispose old skybox
+          this.scene.remove(this.panoramaSphere);
           if (Array.isArray(this.panoramaSphere.material)) {
             this.panoramaSphere.material.forEach(m => {
               const mat = m as THREE.MeshBasicMaterial;
@@ -604,14 +664,24 @@ class BigIslandVRApp {
             });
           }
           
-          this.panoramaSphere.material = newMaterials;
+          // New skybox becomes the main one
+          this.panoramaSphere = newSkybox;
+          
+          // Reset all values
+          this.panoramaSphere.position.set(0, 0, 0);
+          this.panoramaSphere.scale.set(1, 1, 1);
+          this.camera.fov = originalFov;
+          this.camera.updateProjectionMatrix();
+          
+          // Ensure new materials are fully opaque
+          newMaterials.forEach(m => {
+            (m as THREE.MeshBasicMaterial).opacity = 1;
+          });
+          
+          // Update state
           this.currentPanoId = link.panoId;
           this.currentLat = link.lat;
           this.currentLng = link.lng;
-          
-          // Reset camera
-          this.camera.fov = originalFov;
-          this.camera.updateProjectionMatrix();
           
           // Scan for new links
           this.scanForLinks();
@@ -623,17 +693,12 @@ class BigIslandVRApp {
         }
       };
       
-      // Make materials transparent for fading
-      if (Array.isArray(this.panoramaSphere.material)) {
-        this.panoramaSphere.material.forEach(m => {
-          (m as THREE.MeshBasicMaterial).transparent = true;
-        });
-      }
-      
       animate();
       
     } catch (error) {
       console.error('Transition failed:', error);
+      this.panoramaSphere.position.copy(originalPosition);
+      this.panoramaSphere.scale.copy(originalScale);
       this.camera.fov = originalFov;
       this.camera.updateProjectionMatrix();
       this.isTransitioning = false;
